@@ -1,0 +1,159 @@
+
+--1. write a sql to find top 5 customers who did most number booking in the same city where they live. 
+--   Display customer id and percent of those bookings compare to total number of bookings done by them.
+--   In case of tie prefer the customers with higher same city booking percent.
+
+with cte as
+(SELECT b.customer_id, 
+       SUM(case when cc.city = hc.city then 1 else 0 end) as same_city_bookings,
+	   count(booking_id) as total_bookings
+       from hotel_bookings b
+	   inner join customers c on c.[customer_id] = b.customer_id
+	   inner join cities cc on cc.id = c.city_id
+	   inner join hotels h on b.hotel_id = h.id
+	   inner join cities hc on h.city_id = hc.id
+	   group by b.customer_id)
+select top 5 customer_id,
+       same_city_bookings*100.0/total_bookings as percent_of_bookings
+       from cte
+	   order by same_city_bookings desc, percent_of_bookings desc;
+
+--2. write a sql to find percent contribution by females in terms of revenue 
+--   and no of bookings for each hotel	
+
+select b.hotel_id,
+       ROUND(SUM(case when c.gender = 'F' then 1 else 0 end)*100.0/count(*),2) as female_bookings_contribution,
+	   ROUND(SUM(case when c.gender = 'F' then b.number_of_nights*b.per_night_rate else 0 end)*100.0/
+	   SUM(b.number_of_nights*b.per_night_rate),2) as female_revenue_contribution
+       from hotel_bookings b
+	   inner join customers c on b.customer_id = c.customer_id
+	   group by b.hotel_id;
+
+--3. for each hotel find number of bookings for customers who visit from a different state. Review with solution file
+
+select b.hotel_id, COUNT(*) as no_of_bookings
+       from hotel_bookings b
+	   inner join hotels h on b.hotel_id = h.id
+	   inner join customers c on c.customer_id = b.customer_id
+	   inner join cities ch on ch.id = h.city_id
+	   inner join cities cc on cc.id = c.city_id
+	   where cc.state != ch.state
+	   group by b.hotel_id;
+
+--4. for each hotel find the date when occupancy was maximum 
+-- (a customer should not be considered in hotel on the checkout date)
+
+with cte as
+(select MIN(stay_start_date) as min_date, MAX(DATEADD(day, number_of_nights, stay_start_date)) as max_date
+       from hotel_bookings
+	   union all
+ select DATEADD(DAY, 1, min_date), max_date
+       from cte
+	   where DATEADD(DAY, 1, min_date) <= max_date),
+cte1 as
+(select c.min_date as [date], hotel_id, sum(case when c.min_date between stay_start_date and DATEADD(day, number_of_nights-1,stay_start_date) then 1 else 0 end) as occupancy
+       from hotel_bookings h
+	   cross join cte c 
+	   group by c.min_date, hotel_id)
+select hotel_id, [date], occupancy
+from
+(select *,
+       ROW_NUMBER() over (partition by hotel_id order by occupancy desc) as rn
+       from cte1) a
+	   where rn = 1
+
+--5. find customers who have booked hotels in atleast 3 different states
+
+select customer_id, count(distinct c.[state]) as distinct_state_count
+       from hotel_bookings b
+	   inner join hotels h on h.id = b.hotel_id
+	   inner join cities c on h.city_id = c.id
+	   group by customer_id
+	   having count(distinct c.[state]) >=3;
+
+--6. calculate the occupancy rate (percentage of rooms booked in respect of total rooms available) 
+--   for each hotel for each month
+
+with cte as
+(select hotel_id, CAST(stay_date as date) as [date], max(h.[capacity(no of rooms)]) as capacity,
+       count(*) as occupants
+       from hotel_bookings_flatten b
+	   inner join hotels h on b.hotel_id = h.id
+	   group by hotel_id, CAST(stay_date as date))
+select hotel_id, month([date]) as mnth, 
+      SUM(occupants) as occupants, 
+	  SUM(capacity) as capacity,
+	  SUM(occupants)*100.0/SUM(capacity) as ocr
+       from cte
+	   group by hotel_id, month([date]);
+
+--7. for each hotel find dates when they were fully occupied
+
+select hotel_id, stay_date, count(*) as no_of_bookings, max(h.[capacity(no of rooms)]) as capacity
+       from hotel_bookings_flatten b
+	   inner join hotels h on b.hotel_id = h.id
+	   group by hotel_id, stay_date
+	   having count(*) = max(h.[capacity(no of rooms)]);
+
+--8. which booking channel has generated highest sales for each hotel in each month
+
+with cte as
+(select hotel_id, [booking _channel] as booking_channel, FORMAT(booking_date, 'yyyyMM') as booking_month,
+       SUM(per_night_rate*number_of_nights) as sales
+       from hotel_bookings
+	   group by hotel_id, [booking _channel], FORMAT(booking_date, 'yyyyMM'))
+select hotel_id, booking_month, booking_channel
+from
+(select *,
+       ROW_NUMBER() over (partition by hotel_id, booking_month order by sales desc) as rn
+       from cte) a
+where rn = 1
+
+--9. find percent share of number of bookings by each booking channel
+
+with cte as
+(select [booking _channel], 
+       COUNT(*) as no_of_bookings
+       from hotel_bookings
+	   group by [booking _channel])
+select *,
+       ROUND(no_of_bookings*100.0/SUM(no_of_bookings) over (),2) as bookings_share
+       from cte
+
+--10. for each hotel find the total revenue generated by millenials(born between 1980 and 1996) and  
+--    gen z (born after 1996)
+
+select hotel_id, 
+       sum(case when YEAR(c.dob) between 1980 and 1996 then per_night_rate*number_of_nights else 0 end) as millenial_revenue,
+	   sum(case when YEAR(c.dob) > 1996 then per_night_rate*number_of_nights else 0 end) as genz_revenue
+       from hotel_bookings b
+	   inner join customers c on b.customer_id = c.customer_id
+	   group by hotel_id
+
+--11. For each hotel find the average stay duration
+
+select hotel_id, ROUND(AVG(number_of_nights),2) as average_stay_duration
+       from hotel_bookings
+	   group by hotel_id
+
+--12. find the average number of days customers book in advance for each hotel.
+
+SELECT hotel_id, avg(DATEDIFF(day, booking_date, stay_start_date)*1.0) as avg_days_in_advance
+       from hotel_bookings
+	   group by hotel_id
+
+--13. find customers who never did any booking
+
+select c.customer_id
+       from customers c
+	   left join hotel_bookings b on c.customer_id = b.customer_id
+	   where b.booking_id is null
+
+--14. find customers who stayed in atleast 3 distinct hotel in a same month. 
+--    Display  customer name , month and no of bookings.
+
+select customer_id, DATENAME(month, stay_date) as mnth, count(distinct hotel_id) as distinct_hotels
+       from hotel_bookings_flatten
+	   group by customer_id, DATENAME(month, stay_date)
+	   having count(distinct hotel_id) >= 3
+
